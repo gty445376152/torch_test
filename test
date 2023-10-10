@@ -214,7 +214,7 @@ def MLP_nLayer(input_shape, unitList, activationList, dropoutList, N):
 #data preparation process is omitted
 
 
-trainx = np.array(pd.read_csv('datax.csv', index_col = 0))
+trainx = np.array(pd.read_csv('datax1.csv', index_col = 0))
 trainy = np.array(pd.read_csv('datay.csv', index_col = 0))
 
 
