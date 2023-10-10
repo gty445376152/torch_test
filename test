@@ -1,0 +1,330 @@
+import numpy as np
+import pandas as pd
+
+from sklearn.preprocessing import LabelEncoder,MinMaxScaler
+from sklearn.metrics import mean_squared_error
+
+import random
+import os
+from datetime import datetime
+
+import h5py
+import warnings
+import json
+import gc
+from scipy.stats import pearsonr,spearmanr, skew, kurtosis
+import sys
+import time
+
+# from matrix_ops_v import *
+# from minute_ops_v import *
+# from cube_ops import *
+# from backtest_gty import *
+# from factor_ops import * 
+# from model_ops import *
+# from transformer_gty import *
+
+import torch
+from torch.utils.data import Dataset, DataLoader,TensorDataset
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as f
+
+
+from torchstat import stat
+import torchvision.models as models
+from torch import Tensor
+import torchinfo
+import copy
+
+
+from tensorflow.keras.layers import Input, Embedding, Lambda
+from tensorflow.keras.models import Model
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import LSTM
+from tensorflow.compat.v1.keras.layers import CuDNNLSTM
+from tensorflow.compat.v1.keras.layers import CuDNNGRU
+from tensorflow.keras.layers import Activation
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.layers import Conv1D
+from tensorflow.keras.layers import MaxPooling1D
+from tensorflow.keras.layers import Flatten
+import tensorflow.keras.optimizers
+import tensorflow as tf
+from tensorflow.compat.v1.keras.backend import set_session
+from tensorflow.keras.callbacks import EarlyStopping
+import tensorflow.compat.v1.keras.backend as K
+from tensorflow.keras.models import load_model
+
+
+
+
+
+
+
+
+
+class MLP(nn.Module):
+    def __init__(self, c_in:int):
+        super(MLP, self).__init__()
+        #Linear
+        self.W_P1 = nn.Linear(c_in, 512)
+
+
+        self.act1 = get_activation_fn('tanh')
+
+
+        self.head = nn.Linear(512, 1)
+    def forward(self, x:Tensor) -> Tensor:
+
+        x = self.W_P1(x)
+        x = self.act1(x)
+
+        return self.head(x)
+
+def get_activation_fn(activation):
+    if activation == "relu": return nn.ReLU()
+    elif activation == "gelu": return nn.GELU()
+    elif activation == 'tanh': return nn.Tanh()
+    else: return activation()
+
+
+
+def data_prep(trainx, trainy, validation_split, batch_size):
+    split_point = int(trainx.shape[0] * validation_split)
+    return DataLoader(TensorDataset(trainx[:-split_point,:,:], trainy[:-split_point]), batch_size = batch_size, shuffle = True), DataLoader(TensorDataset(trainx[-split_point:,:,:], trainy[-split_point:]), batch_size = batch_size)
+
+
+def model_fit(model, train_dl, valid_dl, criterion, optimizer, filename, device, early_stopping = 3, num_epochs = 64):
+    since = time.time()
+    best_validationLoss = 10000
+    es_marker = 0
+    best_model_wts = copy.deepcopy(model.state_dict())
+    for epoch in range(num_epochs):
+        print('epoch: ', epoch)
+        timer1 = time.time()
+        print(best_validationLoss)
+        running_loss = 0
+        running_lossV = 0
+        #TRAIN
+        model.train()
+        # optimizer.zero_grad()
+        for inputs, labels in train_dl:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            with torch.autograd.detect_anomaly():
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            running_loss = running_loss + loss.item() * inputs.size(0)
+        #VALIDATION
+        model.eval()
+        for inputs, labels in valid_dl:
+            inputs = inputs.to(device)
+            labels = labels.to(device)           
+        
+            with torch.no_grad():
+                outputs = model(inputs)
+                val_loss = criterion(outputs, labels)             
+            
+            running_lossV = running_lossV + val_loss.item() * inputs.size(0)
+
+        epoch_loss = running_loss / len(train_dl.dataset)
+        epoch_lossV = running_lossV / len(valid_dl.dataset)
+
+        
+        s1 = 'epoch: ' + str(epoch) + '---' + 'time: '
+        s2 = 'train_loss: ' + str(round(epoch_loss,4)) + '---  valid_loss: ' + str(round(epoch_lossV,4))
+        print(s1, int(time.time() - timer1))
+        print(s2)
+
+        if epoch_lossV <= best_validationLoss:
+            best_validationLoss = epoch_lossV
+            best_model_wts = copy.deepcopy(model.state_dict())
+        else:
+            es_marker = es_marker + 1
+
+
+        if es_marker >= early_stopping:
+            print('initiate earlyStopping')
+            break
+
+    print('time cosumed: ', round(time.time() - since,2))
+
+    torch.cuda.empty_cache()
+
+    model.load_state_dict(best_model_wts)
+    torch.save(model.state_dict(), filename)
+
+
+    return model
+
+
+
+def MLP_nLayer(input_shape, unitList, activationList, dropoutList, N):
+    # X_input = Input(input_shape, dtype = 'float')
+    X_input = Input(input_shape)
+    # print('gaiguolaaaaaaaaaaaa')
+    for i in range(0, N):
+        if i == 0:
+            X = Dense(unitList[i], activation = activationList[i])(X_input)
+            X = Dropout(dropoutList[i])(X)
+            continue
+
+        elif i < N-2:
+            X = Dense(unitList[i], activation = activationList[i])(X)
+            X = Dropout(dropoutList[i])(X)
+        elif i == N-2:
+            X = Dense(unitList[i], activation = activationList[i])(X)
+            X = Dropout(dropoutList[i])(X)            
+        elif i == N-1:
+            X = Dense(unitList[i], activation = activationList[i])(X)
+            X = Dropout(dropoutList[i])(X)
+
+    main_output = Dense(1, activation='linear', name='main_output')(X)
+
+    model = Model(inputs = X_input, outputs = main_output, name = 'MLP_nLayer')
+    return model    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#pytorch part of code
+#data preparation process is omitted
+
+
+trainx = np.array(pd.read_csv('datax.csv', index_col = 0))
+trainy = np.array(pd.read_csv('datay.csv', index_col = 0))
+
+
+trainx = np.expand_dims(trainx, 1)
+print(trainx.shape)
+print(trainy.shape)
+
+num_epochs = 64
+learning_rate = 0.01
+batch_size = 4096
+validation_split = 0.3
+early_stopping = 7
+
+model_save_path = '/home/tgao/master/model/test.pth'
+
+trainx = torch.tensor(trainx, dtype = torch.float32)
+trainy = torch.tensor(trainy, dtype = torch.float32)
+
+
+torch.set_default_dtype(torch.float32)
+print(trainx.shape)
+
+shuffle_index = [i for i in range(trainx.shape[0])]    
+random.shuffle(shuffle_index)    
+trainx = trainx[shuffle_index]
+trainy = trainy[shuffle_index]    
+gc.collect()
+
+print(trainx.shape)
+
+device = torch.device('cuda')
+torch.cuda.set_per_process_memory_fraction(0.4) 
+
+train_dl, valid_dl = data_prep(trainx, trainy, validation_split, batch_size)
+
+print(trainx.shape[1])
+print(trainx.shape[2])
+model = MLP(trainx.shape[2])
+
+
+print(torchinfo.summary(model,(batch_size, trainx.shape[1], trainx.shape[2])))
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr = learning_rate)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 4, gamma = 0.75)
+
+
+
+model.to(device)
+
+model = model_fit(model, train_dl, valid_dl, criterion, optimizer, model_save_path, device, early_stopping = early_stopping, num_epochs = num_epochs)
+
+
+
+
+print(stop)
+
+
+#tf verion of code
+#data preparation process is omitted
+
+
+
+
+
+print(trainx.shape)
+
+shuffle_index = [i for i in range(trainx.shape[0])]    
+random.shuffle(shuffle_index)    
+trainx = trainx[shuffle_index]
+trainy = trainy[shuffle_index]    
+gc.collect()
+
+
+gpu_device = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = gpu_device
+config_gpu = tf.compat.v1.ConfigProto()
+config_gpu.gpu_options.per_process_gpu_memory_fraction = 0.4
+set_session(tf.compat.v1.Session(config=config_gpu))        
+
+
+early_stopping = EarlyStopping(monitor='val_loss', patience= 3, verbose=2)
+
+print(trainx.shape)
+
+
+unitlist = [512]
+activationlist = ['tanh']
+dropoutlist = [0.4]
+inputshape = (trainx.shape[1],trainx.shape[2],)
+model = MLP_nLayer(inputshape, unitlist, activationlist, dropoutlist, 1)
+model.compile(optimizer= 'Adam',
+loss={'main_output': 'mse'},
+loss_weights={'main_output': 1})
+
+
+
+
+print(model.summary())
+
+history = model.fit(trainx, trainy, epochs= 64, batch_size= 4096, verbose=2, shuffle=True, validation_split = 0.2, callbacks=[early_stopping]) 
+
+
+
+
+
+
+
+
+
+
+
+
+
